@@ -69,15 +69,15 @@ async def predict(file: UploadFile = File(...)):
     prediction = predict_image(img_bytes)
     score = prediction[0][0]  # Extracting the score from prediction array
 
-    if score > 0.5:
+    if score < 0.5:
         return JSONResponse(content={
             "result": "Real",
-            "probability": str(round(100 * score, 2))
+            "probability": str(round(100 * (1 - score), 2))
         })
     else:
         return JSONResponse(content={
             "result": "Spoof",
-            "probability": str(round(100 * (1 - score), 2))
+            "probability": str(round(100 * score, 2))
         })
 
 def predict_image(img_bytes: bytes):
@@ -108,7 +108,7 @@ async def upsert_user_face(request: Request):
 
     realness = predict_image(img_bytes)
     logger.info(realness)
-    if realness[0][0] <= 0.5:
+    if realness[0][0] >= 0.5:
         return JSONResponse(content={"success": False, "message": "Spoof detected. Please try again."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
@@ -154,7 +154,7 @@ async def authenticate_user(request: Request):
 
     realness = predict_image(img_bytes)
     logger.info(f"Liveness score: {realness}")
-    if realness[0][0]  <= 0.5:
+    if realness[0][0]  >= 0.5:
         return JSONResponse(content={"success": False, "message": "Spoof detected. Authentication failed."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
@@ -243,7 +243,7 @@ async def send_transaction(request: Request):
 
     # Face verification
     realness = predict_image(img_bytes)
-    if realness[0][0] <= 0.5:  # Higher score = more live, fail if <= 0.5
+    if realness[0][0] >= 0.5:  # Higher score = more live, fail if <= 0.5
         return JSONResponse(content={"success": False, "message": "Spoof detected. Transaction failed."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
