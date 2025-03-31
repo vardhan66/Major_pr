@@ -7,6 +7,7 @@ from qdrant_client.http import models
 from dotenv import load_dotenv, find_dotenv
 import numpy as np
 import logging
+import onnxruntime as ort
 import os
 import sys
 import io
@@ -35,7 +36,9 @@ app.add_middleware(
 
 logger = logging.getLogger("uvicorn")
 save_path = '.'
-model = load_model(os.path.join(save_path, "liveness.h5"))
+#model = load_model(os.path.join(save_path, "liveness.h5"))
+onnx_model_path = r"D:\OULU_Protocol_2_model_0_0.onnx"
+session = ort.InferenceSession(onnx_model_path)
 
 qdrant_url = os.getenv('QDRANT_CLOUD_URL', 'https://bee4028a-8dd6-4e05-8875-cfe2fea0d4a0.us-east-1-0.aws.cloud.qdrant.io:6333')
 client = QdrantClient(url=qdrant_url, api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.7xq9RsFzyHHEz9O4b_heM7697yDjKeUZCHNGWi6QrMk")
@@ -81,13 +84,20 @@ async def predict(file: UploadFile = File(...)):
         })
 
 def predict_image(img_bytes: bytes):
-    img = Image.open(io.BytesIO(img_bytes))
-    img = img.resize((128, 128))
-    img_array = image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)
-    img_array /= 255.0
-    prediction = model.predict(img_array)
-    return prediction
+    # Open the image from bytes
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    # Resize and preprocess
+    img = cv2.resize(img, (224, 224))  # Changed from 128x128 to 224x224
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
+    img = img.astype(np.float32) / 255.0  # Normalize
+    img = np.transpose(img, (2, 0, 1))  # Change from (H,W,C) to (C,H,W)
+    img = np.expand_dims(img, axis=0)  # Add batch dimension    
+    # Make prediction
+    outputs = session.run(None, {"input": img})
+    return outputs
+
 
 # Updated register endpoint with new passphrase logic
 @app.post("/register")
@@ -106,9 +116,10 @@ async def upsert_user_face(request: Request):
         img_bytes = await request.body()
         username = request.query_params.get('username', '')
 
-    realness = predict_image(img_bytes)
+    outputs = predict_image(img_bytes)
+    realness=outputs[1]
     logger.info(realness)
-    if realness[0][0] >= 0.5:
+    if realness[0][0]*10 >= 0.1:
         return JSONResponse(content={"success": False, "message": "Spoof detected. Please try again."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
@@ -152,9 +163,11 @@ async def authenticate_user(request: Request):
     if not passphrase:
         return JSONResponse(status_code=400, content={"success": False, "message": "Passphrase is required"})
 
-    realness = predict_image(img_bytes)
+    outputs = predict_image(img_bytes)
+    realness=outputs[1]
     logger.info(f"Liveness score: {realness}")
-    if realness[0][0]  >= 0.5:
+    logger.info(f"Liveness score: {realness*10}")
+    if realness[0][0]*10  >= 0.1:
         return JSONResponse(content={"success": False, "message": "Spoof detected. Authentication failed."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
@@ -177,6 +190,7 @@ async def authenticate_user(request: Request):
             return JSONResponse(content={"success": False, "message": "No matching user found."})
 
         matched_point = search_result[0]
+        logger.info(f"Similarity score: {matched_point}")
         payload = matched_point.payload
         
         return JSONResponse(content={
@@ -242,8 +256,9 @@ async def send_transaction(request: Request):
         return JSONResponse(status_code=400, content={"success": False, "message": "Only multipart/form-data supported"})
 
     # Face verification
-    realness = predict_image(img_bytes)
-    if realness[0][0] >= 0.5:  # Higher score = more live, fail if <= 0.5
+    outputs = predict_image(img_bytes)
+    realness=outputs[1]
+    if realness[0][0]*10 >= 0.1:  # Higher score = more live, fail if <= 0.5
         return JSONResponse(content={"success": False, "message": "Spoof detected. Transaction failed."})
 
     encoding = await get_face_encoding_from_bytes(img_bytes)
